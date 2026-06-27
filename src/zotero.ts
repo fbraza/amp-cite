@@ -1,0 +1,365 @@
+import type { PaperRecord } from "./types.ts"
+import {
+	dedupeKeys,
+	enumParam,
+	integerParam,
+	normalizeDoi,
+	normalizePmcid,
+	sleep,
+	stringParam,
+	USER_AGENT,
+} from "./shared.ts"
+
+export const ZOTERO_API_BASE = "https://api.zotero.org"
+export const ZOTERO_API_VERSION = "3"
+export const ZOTERO_MAX_LIMIT = 100
+export const ZOTERO_DEFAULT_INDEX_CAP = 2000
+
+export const DEFAULT_ZOTERO_API_KEY_ENV = "ZOTERO_API_KEY"
+export const DEFAULT_ZOTERO_USER_ID_ENV = "ZOTERO_USER_ID"
+export const DEFAULT_ZOTERO_LIBRARY_ENV = "ZOTERO_LIBRARY"
+export const DEFAULT_ZOTERO_GROUP_ID_ENV = "ZOTERO_GROUP_ID"
+
+export type ZoteroSearchParams = {
+	query: string
+	max_results?: number
+	qmode?: "everything" | "titleCreatorYear"
+	item_type?: string
+	api_key?: string
+}
+
+export type ZoteroSearchResult = {
+	tool: "zotero_search"
+	count: number
+	papers: PaperRecord[]
+	total?: number
+	library?: ZoteroLibrary
+	events: Array<{ phase: string; message?: string; count?: number }>
+}
+
+export function parseZoteroInput(input: Record<string, unknown>): ZoteroSearchParams {
+	return {
+		query: stringParam(input, "query", true)!,
+		max_results: integerParam(input, "max_results", 25, 1, ZOTERO_MAX_LIMIT),
+		qmode: enumParam(input, "qmode", ["everything", "titleCreatorYear"]),
+		item_type: stringParam(input, "item_type"),
+		api_key: stringParam(input, "api_key"),
+	}
+}
+
+let zoteroBackoffUntil = 0
+
+async function respectBackoff(signal?: AbortSignal): Promise<void> {
+	const wait = zoteroBackoffUntil - Date.now()
+	if (wait > 0) await sleep(wait, signal)
+}
+
+function updateBackoffFromResponse(response: Response): void {
+	const header = response.headers.get("Backoff") ?? response.headers.get("Retry-After")
+	if (!header) return
+	const seconds = Number(header)
+	if (Number.isFinite(seconds) && seconds > 0) {
+		zoteroBackoffUntil = Math.max(zoteroBackoffUntil, Date.now() + seconds * 1000)
+	}
+}
+
+export async function zoteroGet<T>(url: string, apiKey: string, signal?: AbortSignal): Promise<{ data: T; response: Response }> {
+	await respectBackoff(signal)
+	const response = await fetch(url, {
+		method: "GET",
+		headers: {
+			"Zotero-API-Key": apiKey,
+			"Zotero-API-Version": ZOTERO_API_VERSION,
+			"user-agent": USER_AGENT,
+			accept: "application/json",
+		},
+		signal,
+		redirect: "follow",
+	})
+	updateBackoffFromResponse(response)
+	if (!response.ok) {
+		const text = await response.text().catch(() => "")
+		const snippet = text ? `: ${text.slice(0, 200)}` : ""
+		throw new Error(`Zotero API ${response.status} ${response.statusText} for ${url}${snippet}`)
+	}
+	return { data: (await response.json()) as T, response }
+}
+
+export function getZoteroApiKey(envVarName?: string): string | undefined {
+	const keyEnv = envVarName?.trim() || DEFAULT_ZOTERO_API_KEY_ENV
+	return process.env[keyEnv]?.trim() || undefined
+}
+
+export function getZoteroLibraryType(): "user" | "group" {
+	const value = process.env[DEFAULT_ZOTERO_LIBRARY_ENV]?.trim().toLowerCase()
+	return value === "group" ? "group" : "user"
+}
+
+export function getZoteroGroupId(): string | undefined {
+	return process.env[DEFAULT_ZOTERO_GROUP_ID_ENV]?.trim() || undefined
+}
+
+export function getZoteroUserIdFromEnv(): string | undefined {
+	return process.env[DEFAULT_ZOTERO_USER_ID_ENV]?.trim() || undefined
+}
+
+export type ZoteroLibrary = { type: "user" | "group"; id: string }
+
+function libraryPrefix(library: ZoteroLibrary): string {
+	return library.type === "user" ? `${ZOTERO_API_BASE}/users/${library.id}` : `${ZOTERO_API_BASE}/groups/${library.id}`
+}
+
+export type ZoteroKeyInfo = {
+	userID?: number
+	username?: string
+	access?: {
+		user?: { library?: boolean; files?: boolean; notes?: boolean; write?: boolean }
+		groups?: unknown
+	}
+}
+
+export async function verifyZoteroAccess(apiKey: string, signal?: AbortSignal): Promise<ZoteroKeyInfo> {
+	const { data } = await zoteroGet<ZoteroKeyInfo>(`${ZOTERO_API_BASE}/keys/current`, apiKey, signal)
+	return data
+}
+
+export async function resolveZoteroContext(
+	apiKey: string,
+	signal?: AbortSignal,
+): Promise<{ apiKey: string; library: ZoteroLibrary; keyInfo: ZoteroKeyInfo }> {
+	const keyInfo = await verifyZoteroAccess(apiKey, signal)
+	const libraryType = getZoteroLibraryType()
+	if (libraryType === "group") {
+		const groupId = getZoteroGroupId()
+		if (!groupId) throw new Error("ZOTERO_GROUP_ID is required when ZOTERO_LIBRARY=group")
+		return { apiKey, library: { type: "group", id: groupId }, keyInfo }
+	}
+	const userId = getZoteroUserIdFromEnv() ?? (keyInfo.userID ? String(keyInfo.userID) : undefined)
+	if (!userId) throw new Error("Could not determine Zotero user ID; set ZOTERO_USER_ID")
+	return { apiKey, library: { type: "user", id: userId }, keyInfo }
+}
+
+export type ZoteroCreator = {
+	creatorType?: string
+	firstName?: string
+	lastName?: string
+	name?: string
+}
+
+export type ZoteroItem = {
+	key: string
+	version: number
+	library?: { type?: string; id?: number }
+	meta?: { creatorSummary?: string; parsedDate?: string; numChildren?: number }
+	data: {
+		key: string
+		itemType: string
+		title?: string
+		abstractNote?: string
+		creators?: ZoteroCreator[]
+		publicationTitle?: string
+		date?: string
+		DOI?: string
+		url?: string
+		extra?: string
+		tags?: Array<{ tag?: string } | string>
+		[k: string]: unknown
+	}
+}
+
+function parsePmidFromExtra(extra?: string): string | undefined {
+	if (!extra) return undefined
+	const match = extra.match(/PMID:\s*(\d+)/i)
+	return match?.[1] || undefined
+}
+
+function parsePmcidFromExtra(extra?: string): string | undefined {
+	if (!extra) return undefined
+	const match = extra.match(/PMC\s*\d+/i)
+	return match ? normalizePmcid(match[0]) : undefined
+}
+
+function yearFromDate(date?: string, parsedDate?: string): number | undefined {
+	const source = parsedDate || date
+	if (!source) return undefined
+	const match = String(source).match(/\b(\d{4})\b/)
+	return match ? Number(match[1]) : undefined
+}
+
+function creatorToAuthor(creator: ZoteroCreator): string | undefined {
+	if (creator.name) return creator.name.trim() || undefined
+	const first = (creator.firstName || "").trim()
+	const last = (creator.lastName || "").trim()
+	const name = [first, last].filter(Boolean).join(" ").trim()
+	return name || undefined
+}
+
+export function zoteroItemToPaperRecord(item: ZoteroItem): PaperRecord {
+	const d = item.data
+	const doi = normalizeDoi(typeof d.DOI === "string" ? d.DOI : undefined)
+	const extra = typeof d.extra === "string" ? d.extra : undefined
+	const pmid = parsePmidFromExtra(extra)
+	const pmcid = parsePmcidFromExtra(extra)
+	const authors = (d.creators ?? []).map(creatorToAuthor).filter((author): author is string => Boolean(author))
+	const abstract = d.abstractNote?.trim() || undefined
+	return {
+		title: d.title || "Untitled",
+		abstract,
+		doi,
+		pmid,
+		pmcid,
+		authors,
+		journal: d.publicationTitle || undefined,
+		year: yearFromDate(d.date, item.meta?.parsedDate),
+		source: "zotero",
+		in_zotero: true,
+		zotero_key: item.key,
+	}
+}
+
+function parseNextLink(linkHeader: string | null): string | undefined {
+	if (!linkHeader) return undefined
+	const match = linkHeader.match(/<([^>]+)>;\s*rel=["']next["']/i)
+	return match?.[1]
+}
+
+export type ZoteroTopItemsResult = { items: ZoteroItem[]; total: number; next?: string }
+
+export async function fetchZoteroTopItems({
+	apiKey,
+	library,
+	limit,
+	start,
+	sort,
+	direction,
+	signal,
+}: {
+	apiKey: string
+	library: ZoteroLibrary
+	limit?: number
+	start?: number
+	sort?: string
+	direction?: string
+	signal?: AbortSignal
+}): Promise<ZoteroTopItemsResult> {
+	const url = new URL(`${libraryPrefix(library)}/items/top`)
+	url.searchParams.set("limit", String(Math.min(ZOTERO_MAX_LIMIT, Math.max(1, limit ?? ZOTERO_MAX_LIMIT))))
+	if (start) url.searchParams.set("start", String(start))
+	if (sort) url.searchParams.set("sort", sort)
+	if (direction) url.searchParams.set("direction", direction)
+	const { data, response } = await zoteroGet<ZoteroItem[]>(url.toString(), apiKey, signal)
+	const total = Number(response.headers.get("Total-Results") ?? data.length)
+	const next = parseNextLink(response.headers.get("Link"))
+	return { items: data, total, next }
+}
+
+export type ZoteroOwnershipIndex = Map<string, string>
+
+export function buildZoteroOwnershipIndex(items: ZoteroItem[]): ZoteroOwnershipIndex {
+	const index: ZoteroOwnershipIndex = new Map()
+	for (const item of items) {
+		const paper = zoteroItemToPaperRecord(item)
+		if (!paper.zotero_key) continue
+		for (const key of dedupeKeys(paper)) {
+			if (!index.has(key)) index.set(key, paper.zotero_key)
+		}
+	}
+	return index
+}
+
+export async function fetchAllZoteroTopItems({
+	apiKey,
+	library,
+	cap,
+	signal,
+	onProgress,
+}: {
+	apiKey: string
+	library: ZoteroLibrary
+	cap?: number
+	signal?: AbortSignal
+	onProgress?: (info: { items: number; total?: number }) => void
+}): Promise<{ items: ZoteroItem[]; total?: number }> {
+	const max = Math.max(1, cap ?? ZOTERO_DEFAULT_INDEX_CAP)
+	const all: ZoteroItem[] = []
+	let total: number | undefined
+	let next: string | undefined
+
+	const first = await fetchZoteroTopItems({
+		apiKey,
+		library,
+		limit: ZOTERO_MAX_LIMIT,
+		start: 0,
+		sort: "dateModified",
+		direction: "desc",
+		signal,
+	})
+	total = first.total
+	all.push(...first.items)
+	next = first.next
+	onProgress?.({ items: all.length, total })
+
+	while (next && all.length < max) {
+		const { data, response } = await zoteroGet<ZoteroItem[]>(next, apiKey, signal)
+		all.push(...data)
+		next = parseNextLink(response.headers.get("Link"))
+		onProgress?.({ items: all.length, total })
+		if (data.length === 0) break
+	}
+
+	return { items: all.slice(0, max), total }
+}
+
+export type ZoteroOwnershipResult = {
+	index: ZoteroOwnershipIndex
+	library: ZoteroLibrary
+	libraryItems: number
+	total?: number
+}
+
+export async function prepareZoteroOwnership({
+	apiKey,
+	cap,
+	signal,
+	onProgress,
+}: {
+	apiKey: string
+	cap?: number
+	signal?: AbortSignal
+	onProgress?: (info: { items: number; total?: number }) => void
+}): Promise<ZoteroOwnershipResult> {
+	const ctx = await resolveZoteroContext(apiKey, signal)
+	const { items, total } = await fetchAllZoteroTopItems({ apiKey, library: ctx.library, cap, signal, onProgress })
+	const index = buildZoteroOwnershipIndex(items)
+	return { index, library: ctx.library, libraryItems: items.length, total }
+}
+
+export function markPapersWithZoteroOwnership(papers: PaperRecord[], index: ZoteroOwnershipIndex): PaperRecord[] {
+	return papers.map((paper) => {
+		for (const key of dedupeKeys(paper)) {
+			const zoteroKey = index.get(key)
+			if (zoteroKey) return { ...paper, in_zotero: true, zotero_key: zoteroKey }
+		}
+		return { ...paper, in_zotero: false }
+	})
+}
+
+export async function searchZotero(params: ZoteroSearchParams, signal?: AbortSignal): Promise<ZoteroSearchResult> {
+	const apiKey = getZoteroApiKey(params.api_key)
+	if (!apiKey) throw new Error("ZOTERO_API_KEY is not set; cannot search the Zotero library")
+	const ctx = await resolveZoteroContext(apiKey, signal)
+	const maxResults = Math.min(ZOTERO_MAX_LIMIT, Math.max(1, Math.floor(params.max_results ?? 25)))
+	const url = new URL(`${libraryPrefix(ctx.library)}/items/top`)
+	url.searchParams.set("q", params.query)
+	url.searchParams.set("qmode", params.qmode ?? "everything")
+	url.searchParams.set("limit", String(maxResults))
+	if (params.item_type) url.searchParams.set("itemType", params.item_type)
+	url.searchParams.set("sort", "dateModified")
+	url.searchParams.set("direction", "desc")
+	const events: ZoteroSearchResult["events"] = [{ phase: "search", message: `Searching Zotero library for: ${params.query}` }]
+	const { data, response } = await zoteroGet<ZoteroItem[]>(url.toString(), apiKey, signal)
+	const papers = data.map(zoteroItemToPaperRecord)
+	const total = Number(response.headers.get("Total-Results") ?? papers.length)
+	events.push({ phase: "complete", count: papers.length })
+	return { tool: "zotero_search", count: papers.length, papers, total, library: ctx.library, events }
+}

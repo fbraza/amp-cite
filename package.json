@@ -1,0 +1,27 @@
+{
+  "name": "@fbraza/amp-cite",
+  "version": "0.1.0",
+  "description": "Amp plugin and skill for PubMed, Zotero, and literature-review workflows.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "files": [
+    ".amp",
+    ".agents",
+    "src",
+    "tests",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "amp-plugin",
+    "amp-skill",
+    "literature",
+    "pubmed",
+    "zotero"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "pack:check": "npm pack --dry-run"
+  }
+}
