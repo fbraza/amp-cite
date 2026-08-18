@@ -282,7 +282,7 @@ function parseJats(xml: string): ExtractedSection[] {
 	let inBody = false
 	let excludedDepth = 0
 	let titleOwner: SectionBuilder | undefined
-	let paragraphOwner: SectionBuilder | undefined
+	const paragraphOwners: Array<SectionBuilder | undefined> = []
 	let paragraphParts: string[] | undefined
 
 	function appendText(value: string) {
@@ -291,12 +291,16 @@ function parseJats(xml: string): ExtractedSection[] {
 		if (paragraphParts) paragraphParts.push(value)
 	}
 
-	function closeParagraph() {
+	function flushParagraph() {
 		if (!paragraphParts) return
 		const text = decodeXmlText(paragraphParts.join(""))
-		if (text) (paragraphOwner?.paragraphs ?? bodyParagraphs).push(text)
-		paragraphOwner = undefined
-		paragraphParts = undefined
+		if (text) (paragraphOwners.at(-1)?.paragraphs ?? bodyParagraphs).push(text)
+	}
+
+	function closeParagraph() {
+		flushParagraph()
+		paragraphOwners.pop()
+		paragraphParts = paragraphOwners.length > 0 ? [] : undefined
 	}
 
 	for (let index = 0; index < xml.length; ) {
@@ -334,7 +338,7 @@ function parseJats(xml: string): ExtractedSection[] {
 		if (closing) {
 			const opened = stack.pop()
 			if (opened !== name) throw new Error(`Europe PMC returned unparseable XML: expected </${opened ?? "none"}> before </${name}>`)
-			if (name === "p") closeParagraph()
+			if (name === "p" && excludedDepth === 0) closeParagraph()
 			if (name === "title" && titleOwner) {
 				const heading = decodeXmlText(titleOwner.headingParts.join(""))
 				const ownCategories = classifyHeading(heading)
@@ -360,13 +364,13 @@ function parseJats(xml: string): ExtractedSection[] {
 		}
 		if (inBody && excludedDepth === 0 && name === "title" && stack.at(-2) === "sec") titleOwner = sectionStack.at(-1)
 		if (inBody && excludedDepth === 0 && name === "p") {
-			if (paragraphParts) throw new Error("Europe PMC returned unparseable XML: nested paragraphs")
-			paragraphOwner = sectionStack.at(-1)
+			flushParagraph()
+			paragraphOwners.push(sectionStack.at(-1))
 			paragraphParts = []
 		}
 		if (selfClosing) {
 			stack.pop()
-			if (name === "p") closeParagraph()
+			if (name === "p" && excludedDepth === 0) closeParagraph()
 			if (name === "title" && titleOwner) titleOwner = undefined
 			if (EXCLUDED_JATS.has(name) && excludedDepth > 0) excludedDepth--
 			if (name === "sec") sectionStack.pop()

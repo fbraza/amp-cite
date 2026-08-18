@@ -119,6 +119,21 @@ const nestedJats = `<article>
 	</body>
 </article>`
 
+const listInParagraphJats = `<article dtd-version="1.4">
+	<body>
+		<sec>
+			<title>Results</title>
+			<p>Before the list.
+				<list list-type="bullet">
+					<list-item><p>First list item.</p></list-item>
+					<list-item><p>Second list item.</p></list-item>
+				</list>
+				After the list.</p>
+			<p>Closing result.</p>
+		</sec>
+	</body>
+</article>`
+
 test("Amp directory plugin registers its bundled skill and expected tools", async () => {
 	const tools: Array<Record<string, unknown>> = []
 	const skills: Array<Record<string, unknown>> = []
@@ -443,6 +458,34 @@ test("Europe PMC OA success extracts nested JATS sections and excludes non-body 
 	assert.equal(calls.length, 2)
 })
 
+test("Europe PMC preserves JATS list-item paragraphs nested in an outer paragraph", async () => {
+	globalThis.fetch = async (input: RequestInfo | URL) =>
+		String(input).includes("/search?")
+			? new Response(JSON.stringify(europePmcSearchResult()), { headers: { "content-type": "application/json" } })
+			: new Response(listInParagraphJats, { headers: { "content-type": "application/xml" } })
+
+	const expected = "Before the list.\n\nFirst list item.\n\nSecond list item.\n\nAfter the list.\n\nClosing result."
+	const result = await fetchEuropePmcFulltext({ identifier: "PMC555", sections: ["results"] })
+	assert.equal(result.status, "full_text")
+	if (result.status !== "full_text") return
+	assert.equal(result.sections.length, 1)
+	assert.equal(result.sections[0]?.heading, "Results")
+	assert.equal(result.sections[0]?.section, "results")
+	assert.equal(result.sections[0]?.text, expected)
+	for (const text of ["Before the list.", "First list item.", "Second list item.", "After the list.", "Closing result."]) {
+		assert.equal(result.sections[0]?.text.split(text).length, 2)
+	}
+
+	const maxChars = expected.indexOf("Second list item.") + 8
+	const capped = await fetchEuropePmcFulltext({ identifier: "PMC555", sections: ["results"], max_chars: maxChars })
+	assert.equal(capped.status, "full_text")
+	if (capped.status !== "full_text") return
+	assert.equal(capped.sections[0]?.text, expected.slice(0, maxChars))
+	assert.equal(capped.sections[0]?.truncated, true)
+	assert.equal(capped.returned_chars, maxChars)
+	assert.equal(capped.truncated, true)
+})
+
 test("Europe PMC never requests XML for non-OA or OA records without a PMCID", async () => {
 	for (const [record, reason] of [
 		[{ isOpenAccess: "N" }, "not_open_access"],
@@ -488,6 +531,14 @@ test("Europe PMC reports provider and malformed JATS failures", async () => {
 		return new Response("<article><body><sec>", { headers: { "content-type": "application/xml" } })
 	}
 	await assert.rejects(fetchEuropePmcFulltext({ identifier: "PMC555" }), /unclosed <sec> tag/)
+
+	calls = 0
+	globalThis.fetch = async () => {
+		calls++
+		if (calls === 1) return new Response(JSON.stringify(europePmcSearchResult()), { headers: { "content-type": "application/json" } })
+		return new Response("<article><body><sec><p>Broken</sec></body></article>", { headers: { "content-type": "application/xml" } })
+	}
+	await assert.rejects(fetchEuropePmcFulltext({ identifier: "PMC555" }), /expected <\/p> before <\/sec>/)
 })
 
 test("Europe PMC falls back to unclassified body sections only for default section selection", async () => {
