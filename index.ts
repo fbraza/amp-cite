@@ -1,5 +1,6 @@
 import type { PluginAPI } from "@ampcode/plugin"
 
+import { EUROPE_PMC_SECTIONS, fetchEuropePmcFulltext, parseEuropePmcInput } from "./lib/europe-pmc.ts"
 import { parseLiteratureInput, searchLiterature } from "./lib/literature-search.ts"
 import { parsePubmedInput, searchPubmed } from "./lib/pubmed.ts"
 import { parseZoteroInput, searchZotero } from "./lib/zotero.ts"
@@ -50,6 +51,23 @@ const zoteroInputSchema = {
 	required: ["query"],
 }
 
+const europePmcInputSchema = {
+	type: "object" as const,
+	properties: {
+		identifier: {
+			type: "string",
+			description: "Canonical DOI (including DOI: or doi.org forms), numeric PMID (including PMID:), or PMCID (PMC... or PMCID:PMC...).",
+		},
+		sections: {
+			type: "array",
+			items: { type: "string", enum: EUROPE_PMC_SECTIONS },
+			description: "Scientific body sections to excerpt. Defaults to introduction, methods, results, discussion, and conclusion.",
+		},
+		max_chars: { type: "integer", description: "Maximum excerpt characters to return. Default 18000, hard maximum 24000." },
+	},
+	required: ["identifier"],
+}
+
 export default async function ampCitePlugin(amp: PluginAPI) {
 	amp.registerTool({
 		name: "literature_search",
@@ -76,6 +94,15 @@ export default async function ampCitePlugin(amp: PluginAPI) {
 		inputSchema: zoteroInputSchema,
 		async execute(input) {
 			return jsonResult(await searchZotero(parseZoteroInput(input)))
+		},
+	})
+
+	amp.registerTool({
+		name: "europe_pmc_fulltext",
+		description: "Retrieve bounded scientific section excerpts from the legal Open Access JATS full text of one exactly identified Europe PMC paper.",
+		inputSchema: europePmcInputSchema,
+		async execute(input) {
+			return jsonResult(await fetchEuropePmcFulltext(parseEuropePmcInput(input)))
 		},
 	})
 

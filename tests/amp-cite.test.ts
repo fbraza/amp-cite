@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises"
 import test from "node:test"
 
 import ampCitePlugin, { description } from "../index.ts"
+import { fetchEuropePmcFulltext, normalizeEuropePmcIdentifier } from "../lib/europe-pmc.ts"
 import { searchLiterature } from "../lib/literature-search.ts"
 import { searchPubmed } from "../lib/pubmed.ts"
 import { dedupeKeys, doiToUrl, normalizePmcid, pmcidToUrl } from "../lib/shared.ts"
@@ -79,6 +80,45 @@ function zoteroItemFixture(overrides: Record<string, unknown> = {}): Record<stri
 	}
 }
 
+function europePmcSearchResult(overrides: Record<string, unknown> = {}) {
+	return {
+		hitCount: 1,
+		resultList: {
+			result: [
+				{
+					source: "MED",
+					id: "12345",
+					pmid: "12345",
+					pmcid: "PMC555",
+					doi: "10.1000/example",
+					title: "Open paper",
+					authorString: "Smith J",
+					journalTitle: "Test Journal",
+					pubYear: "2024",
+					isOpenAccess: "Y",
+					license: "CC BY",
+					...overrides,
+				},
+			],
+		},
+	}
+}
+
+const nestedJats = `<article>
+	<front><article-meta><title-group><article-title>Open paper</article-title></title-group><fn-group><fn><p>SECRET FRONT FOOTNOTE</p></fn></fn-group></article-meta></front>
+	<body>
+		<sec><title>Introduction</title><p>Introductory <italic>context</italic>.</p></sec>
+		<sec><title>Materials and Methods</title><p>Methods body.</p>
+			<fig><caption><p>SECRET FIGURE CAPTION</p></caption></fig>
+			<table-wrap><caption><p>SECRET TABLE TEXT</p></caption><table><tr><td>SECRET CELL</td></tr></table></table-wrap>
+			<supplementary-material><p>SECRET SUPPLEMENT</p></supplementary-material>
+			<sec><title>Cohort selection</title><p>Nested method detail.</p></sec>
+		</sec>
+		<sec><title>Results and Discussion</title><p>Combined scientific findings and interpretation.</p></sec>
+		<ref-list><title>References</title><ref><mixed-citation>SECRET REFERENCE</mixed-citation></ref></ref-list>
+	</body>
+</article>`
+
 test("Amp directory plugin registers its bundled skill and expected tools", async () => {
 	const tools: Array<Record<string, unknown>> = []
 	const skills: Array<Record<string, unknown>> = []
@@ -97,7 +137,7 @@ test("Amp directory plugin registers its bundled skill and expected tools", asyn
 	assert.deepEqual(skills, [{ path: "skills/researching-literature" }])
 	assert.deepEqual(
 		tools.map((tool) => tool.name),
-		["literature_search", "pubmed_search", "zotero_search"],
+		["literature_search", "pubmed_search", "zotero_search", "europe_pmc_fulltext"],
 	)
 	for (const tool of tools) {
 		assert.equal(typeof tool.description, "string")
@@ -112,7 +152,7 @@ test("Amp directory plugin registers its bundled skill and expected tools", asyn
 test("bundled skill has its qualified-name metadata, gated tools, and resources", async () => {
 	const skill = await readFile(new URL("../skills/researching-literature/SKILL.md", import.meta.url), "utf8")
 	assert.match(skill, /^name: researching-literature$/m)
-	for (const tool of ["literature_search", "pubmed_search", "zotero_search"]) {
+	for (const tool of ["literature_search", "pubmed_search", "zotero_search", "europe_pmc_fulltext"]) {
 		assert.match(skill, new RegExp(`^  - ${tool}$`, "m"))
 	}
 	assert.match(skill, /references\/pubmed_routine\.md/)
@@ -320,6 +360,186 @@ test("registered Amp tool execute returns parseable JSON", async () => {
 	const parsed = JSON.parse(output)
 	assert.equal(parsed.tool, "pubmed_search")
 	assert.equal(parsed.count, 1)
+})
+
+test("Europe PMC identifier normalization accepts only canonical DOI, PMID, and PMCID forms", () => {
+	assert.deepEqual(normalizeEuropePmcIdentifier("https://doi.org/10.1000/Example"), {
+		type: "doi",
+		normalized: "10.1000/example",
+		query: "DOI:10.1000/example",
+	})
+	assert.equal(normalizeEuropePmcIdentifier("DOI: 10.1000/example").normalized, "10.1000/example")
+	assert.deepEqual(normalizeEuropePmcIdentifier("PMID: 12345"), {
+		type: "pmid",
+		normalized: "12345",
+		query: "EXT_ID:12345 AND SRC:MED",
+	})
+	assert.deepEqual(normalizeEuropePmcIdentifier("PMCID: pmc555"), {
+		type: "pmcid",
+		normalized: "PMC555",
+		query: "PMCID:PMC555",
+	})
+	assert.throws(() => normalizeEuropePmcIdentifier("555abc"), /Malformed identifier/)
+	assert.throws(() => normalizeEuropePmcIdentifier("PMCID:555"), /Malformed identifier/)
+})
+
+test("Europe PMC requires an exact unambiguous match", async () => {
+	let calls = 0
+	globalThis.fetch = async () => {
+		calls++
+		return new Response(JSON.stringify(europePmcSearchResult({ doi: "10.1000/different" })), {
+			headers: { "content-type": "application/json" },
+		})
+	}
+	const notFound = await fetchEuropePmcFulltext({ identifier: "10.1000/example" })
+	assert.equal(notFound.status, "unavailable")
+	assert.equal(notFound.reason, "not_found")
+	assert.equal(notFound.recommended_fallback, "pubmed_abstract")
+	assert.equal(calls, 1)
+
+	globalThis.fetch = async () => {
+		const payload = europePmcSearchResult()
+		payload.resultList.result.push({ ...payload.resultList.result[0] })
+		return new Response(JSON.stringify(payload), { headers: { "content-type": "application/json" } })
+	}
+	const ambiguous = await fetchEuropePmcFulltext({ identifier: "10.1000/example" })
+	assert.equal(ambiguous.status, "unavailable")
+	assert.equal(ambiguous.reason, "ambiguous_match")
+})
+
+test("Europe PMC OA success extracts nested JATS sections and excludes non-body content", async () => {
+	const calls: string[] = []
+	globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+		const url = String(input)
+		calls.push(url)
+		assert.equal(init?.method, "GET")
+		if (url.includes("/search?")) {
+			const parsed = new URL(url)
+			assert.equal(parsed.searchParams.get("query"), "EXT_ID:12345 AND SRC:MED")
+			assert.equal(parsed.searchParams.get("resultType"), "core")
+			assert.equal(parsed.searchParams.get("format"), "json")
+			assert.equal(parsed.searchParams.get("pageSize"), "5")
+			return new Response(JSON.stringify(europePmcSearchResult()), { headers: { "content-type": "application/json" } })
+		}
+		assert.match(url, /\/PMC555\/fullTextXML$/)
+		return new Response(nestedJats, { headers: { "content-type": "application/xml" } })
+	}
+
+	const result = await fetchEuropePmcFulltext({ identifier: "PMID:12345", sections: ["methods", "discussion"] })
+	assert.equal(result.status, "full_text")
+	if (result.status !== "full_text") return
+	assert.equal(result.metadata.license, "CC BY")
+	assert.equal(result.metadata.pmid, "12345")
+	assert.equal(result.sections.length, 3)
+	assert.deepEqual(result.sections.map((section) => section.heading), ["Materials and Methods", "Cohort selection", "Results and Discussion"])
+	assert.equal(result.sections[1]?.section, "methods")
+	assert.equal(result.sections[2]?.section, "discussion")
+	const output = JSON.stringify(result)
+	for (const excluded of ["SECRET FRONT", "SECRET FIGURE", "SECRET TABLE", "SECRET CELL", "SECRET SUPPLEMENT", "SECRET REFERENCE"]) {
+		assert.doesNotMatch(output, new RegExp(excluded))
+	}
+	assert.match(output, /Nested method detail/)
+	assert.deepEqual(result.missing_sections, [])
+	assert.equal(calls.length, 2)
+})
+
+test("Europe PMC never requests XML for non-OA or OA records without a PMCID", async () => {
+	for (const [record, reason] of [
+		[{ isOpenAccess: "N" }, "not_open_access"],
+		[{ pmcid: undefined }, "no_pmcid"],
+	] as const) {
+		let calls = 0
+		globalThis.fetch = async () => {
+			calls++
+			return new Response(JSON.stringify(europePmcSearchResult(record)), { headers: { "content-type": "application/json" } })
+		}
+		const result = await fetchEuropePmcFulltext({ identifier: "10.1000/example" })
+		assert.equal(result.status, "unavailable")
+		assert.equal(result.reason, reason)
+		assert.equal(calls, 1)
+	}
+})
+
+test("Europe PMC maps missing XML and oversized sources to unavailable results", async () => {
+	for (const [xmlResponse, reason] of [
+		[new Response("missing", { status: 404 }), "xml_not_available"],
+		[new Response("too large", { headers: { "content-length": String(5 * 1024 * 1024 + 1) } }), "source_too_large"],
+	] as const) {
+		let calls = 0
+		globalThis.fetch = async () => {
+			calls++
+			if (calls === 1) return new Response(JSON.stringify(europePmcSearchResult()), { headers: { "content-type": "application/json" } })
+			return xmlResponse
+		}
+		const result = await fetchEuropePmcFulltext({ identifier: "PMC555" })
+		assert.equal(result.status, "unavailable")
+		assert.equal(result.reason, reason)
+	}
+})
+
+test("Europe PMC reports provider and malformed JATS failures", async () => {
+	globalThis.fetch = async () => new Response("rate limited", { status: 429 })
+	await assert.rejects(fetchEuropePmcFulltext({ identifier: "PMC555" }), /rate limited \(HTTP 429\)/)
+
+	let calls = 0
+	globalThis.fetch = async () => {
+		calls++
+		if (calls === 1) return new Response(JSON.stringify(europePmcSearchResult()), { headers: { "content-type": "application/json" } })
+		return new Response("<article><body><sec>", { headers: { "content-type": "application/xml" } })
+	}
+	await assert.rejects(fetchEuropePmcFulltext({ identifier: "PMC555" }), /unclosed <sec> tag/)
+})
+
+test("Europe PMC falls back to unclassified body sections only for default section selection", async () => {
+	const unclassifiedJats = "<article><body><sec><title>Overview</title><p>Readable body text.</p></sec></body></article>"
+	globalThis.fetch = async (input: RequestInfo | URL) =>
+		String(input).includes("/search?")
+			? new Response(JSON.stringify(europePmcSearchResult()), { headers: { "content-type": "application/json" } })
+			: new Response(unclassifiedJats, { headers: { "content-type": "application/xml" } })
+
+	const defaultResult = await fetchEuropePmcFulltext({ identifier: "PMC555" })
+	assert.equal(defaultResult.status, "full_text")
+	if (defaultResult.status !== "full_text") return
+	assert.equal(defaultResult.section_fallback, true)
+	assert.equal(defaultResult.sections[0]?.section, "other")
+
+	const explicitResult = await fetchEuropePmcFulltext({ identifier: "PMC555", sections: ["results"] })
+	assert.equal(explicitResult.status, "full_text")
+	if (explicitResult.status !== "full_text") return
+	assert.equal(explicitResult.section_fallback, false)
+	assert.deepEqual(explicitResult.sections, [])
+	assert.deepEqual(explicitResult.missing_sections, ["results"])
+})
+
+test("Europe PMC enforces excerpt caps, reports truncation, and executes as JSON", async () => {
+	globalThis.fetch = async (input: RequestInfo | URL) =>
+		String(input).includes("/search?")
+			? new Response(JSON.stringify(europePmcSearchResult()), { headers: { "content-type": "application/json" } })
+			: new Response(nestedJats, { headers: { "content-type": "application/xml" } })
+
+	const capped = await fetchEuropePmcFulltext({ identifier: "PMC555", sections: ["all"], max_chars: 20 })
+	assert.equal(capped.status, "full_text")
+	if (capped.status !== "full_text") return
+	assert.equal(capped.returned_chars, 20)
+	assert.equal(capped.truncated, true)
+	assert.equal(capped.sections[0]?.truncated, true)
+	assert.equal(capped.sections.length, 4)
+	assert.throws(() => normalizeEuropePmcIdentifier("not an id"), /Malformed identifier/)
+
+	const tools: Array<{ name: string; execute: (input: Record<string, unknown>) => Promise<string> }> = []
+	await ampCitePlugin({
+		registerTool(tool: any) {
+			tools.push(tool)
+		},
+		async registerSkill() {
+			return { unsubscribe() {} }
+		},
+		logger: { log() {} },
+	} as any)
+	const output = await tools.find((tool) => tool.name === "europe_pmc_fulltext")!.execute({ identifier: "PMC555", sections: ["results"] })
+	const parsed = JSON.parse(output)
+	assert.equal(parsed.tool, "europe_pmc_fulltext")
+	assert.equal(parsed.status, "full_text")
 })
 
 test.afterEach(() => {

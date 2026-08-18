@@ -2,8 +2,8 @@
 
 Amp-oriented port of [`@fbraza/pi-cite`](https://github.com/fbraza/pi-cite), packaged as one self-contained Amp directory plugin:
 
-1. **Literature tools** for PubMed, Zotero, and combined literature search.
-2. **A bundled literature skill** that teaches the agent how to use those tools for verified citation search, paper screening, and structured synthesis.
+1. **Four literature tools** for PubMed, read-only Zotero ownership checks, combined literature search, and Europe PMC open-access full-text excerpts.
+2. **A bundled literature skill** that teaches the agent how to use those tools for verified citation search, paper screening, optional full-text escalation, and structured synthesis.
 
 This repository contains the Amp port of the original Pi extension code.
 
@@ -13,6 +13,7 @@ This repository contains the Amp port of the original Pi extension code.
 amp-cite/
 ├── index.ts
 ├── lib/
+│   ├── europe-pmc.ts
 │   ├── literature-search.ts
 │   ├── pubmed.ts
 │   ├── shared.ts
@@ -32,10 +33,11 @@ amp-cite/
 │       ├── generate_table.py
 │       └── synthesis.py
 └── tests/
-    └── amp-cite.test.ts
+    ├── amp-cite.test.ts
+    └── literature-output.test.ts
 ```
 
-The plugin explicitly registers its bundled skill with `amp.registerSkill`. Amp exposes it under the qualified name `amp-cite:researching-literature`; there is no separate bare project skill. The skill's `builtin-tools` frontmatter gates all three plugin tools until the skill is loaded.
+The plugin explicitly registers its bundled skill with `amp.registerSkill`. Amp exposes it under the qualified name `amp-cite:researching-literature`; there is no separate bare project skill. The skill's `builtin-tools` frontmatter gates all four plugin tools until the skill is loaded.
 
 ## Amp plugin tools
 
@@ -44,6 +46,9 @@ The Amp plugin preserves the original tool names because the skill is written ar
 - `literature_search` — PubMed search plus optional read-only Zotero ownership annotation.
 - `pubmed_search` — direct PubMed E-utilities search and metadata retrieval.
 - `zotero_search` — read-only Zotero library search.
+- `europe_pmc_fulltext` — resolves one DOI, PMID, or PMCID and returns bounded structured excerpts when Europe PMC has open-access JATS; otherwise recommends the PubMed abstract fallback.
+
+The standard workflow searches PubMed with full abstracts and uses Zotero only to annotate whether papers are already owned. Broad reviews use 2–4 focused PubMed-ready queries whose results are merged and deduplicated. Full text is opt-in: the skill escalates a small pivotal set to Europe PMC, records OA provenance and fallback reasons, and never writes to Zotero. Default reports retain their existing Paper Summary Table; reports requested with full text append an explicit `Evidence Source` column.
 
 ## Environment variables
 
@@ -69,7 +74,7 @@ After installing or publishing the plugin and reloading plugins, inspect the bun
 amp skill info amp-cite:researching-literature
 ```
 
-The plugin tools return JSON strings containing paper records, provider metadata, and event summaries. Unit tests mock all PubMed/Zotero network calls; live API checks should be done manually with small `max_results` values.
+The plugin tools return JSON strings containing paper records, provider metadata, and event summaries. Unit tests mock PubMed, Europe PMC, and Zotero network calls; live API checks should be done manually with small result and excerpt bounds.
 
 ## Develop
 
@@ -86,6 +91,7 @@ The optional preclinical extraction script uses only the Python standard library
 - [x] Literature skill, references, and scripts bundled into the directory plugin.
 - [x] Skill registered as `amp-cite:researching-literature` with gated plugin tools.
 - [x] PubMed/Zotero TypeScript logic ported from Pi extension to Amp plugin API.
+- [x] Europe PMC open-access full-text retrieval added with bounded JATS excerpts.
 - [x] Amp plugin tests added.
 - [x] README updated with final install and usage instructions.
 
