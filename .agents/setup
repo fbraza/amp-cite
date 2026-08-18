@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+printf '[setup] Checking system prerequisites...\n'
+apt_packages=()
+command -v curl >/dev/null 2>&1 || apt_packages+=(curl)
+command -v node >/dev/null 2>&1 || apt_packages+=(nodejs)
+command -v npm >/dev/null 2>&1 || apt_packages+=(npm)
+command -v python3 >/dev/null 2>&1 || apt_packages+=(python3)
+
+if ((${#apt_packages[@]})); then
+	printf '[setup] Installing missing packages: %s\n' "${apt_packages[*]}"
+	sudo apt-get update
+	sudo apt-get install -y "${apt_packages[@]}"
+else
+	printf '[setup] System prerequisites are already installed.\n'
+fi
+
+if ! command -v bun >/dev/null 2>&1; then
+	printf '[setup] Installing Bun 1.3.10...\n'
+	curl -fsSL https://bun.sh/install | bash -s -- bun-v1.3.10
+	mkdir -p "$HOME/.local/bin"
+	ln -sfn "$HOME/.bun/bin/bun" "$HOME/.local/bin/bun"
+	export PATH="$HOME/.local/bin:$PATH"
+else
+	printf '[setup] Bun is already installed.\n'
+fi
+
+printf '[setup] Ready (Node %s, npm %s, Bun %s, Python %s).\n' \
+	"$(node --version)" \
+	"$(npm --version)" \
+	"$(bun --version)" \
+	"$(python3 --version | awk '{print $2}')"
