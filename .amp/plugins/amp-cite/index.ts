@@ -1,23 +1,10 @@
-import { parseLiteratureInput, searchLiterature } from "../../src/literature-search.ts"
-import { parsePubmedInput, searchPubmed } from "../../src/pubmed.ts"
-import { parseZoteroInput, searchZotero } from "../../src/zotero.ts"
+import type { PluginAPI } from "@ampcode/plugin"
 
-type PluginAPI = {
-	logger?: { log: (...args: unknown[]) => void }
-	registerTool: (definition: PluginToolDefinition) => unknown
-}
+import { parseLiteratureInput, searchLiterature } from "./lib/literature-search.ts"
+import { parsePubmedInput, searchPubmed } from "./lib/pubmed.ts"
+import { parseZoteroInput, searchZotero } from "./lib/zotero.ts"
 
-type PluginToolDefinition = {
-	name: string
-	description: string
-	inputSchema: {
-		type: "object"
-		properties?: Record<string, object>
-		required?: string[]
-		[key: string]: unknown
-	}
-	execute: (input: Record<string, unknown>, ctx?: unknown) => Promise<string>
-}
+export const description = "Searches PubMed and Zotero and bundles a guided literature-research workflow with verified citations and structured synthesis."
 
 function jsonResult(value: unknown): string {
 	return JSON.stringify(value, null, 2)
@@ -63,7 +50,7 @@ const zoteroInputSchema = {
 	required: ["query"],
 }
 
-export default function ampCitePlugin(amp: PluginAPI) {
+export default async function ampCitePlugin(amp: PluginAPI) {
 	amp.registerTool({
 		name: "literature_search",
 		description:
@@ -92,5 +79,6 @@ export default function ampCitePlugin(amp: PluginAPI) {
 		},
 	})
 
-	amp.logger?.log?.("amp-cite plugin registered literature_search, pubmed_search, and zotero_search")
+	await amp.registerSkill({ path: "skills/researching-literature" })
+	amp.logger.log("amp-cite plugin registered researching-literature and its literature search tools")
 }

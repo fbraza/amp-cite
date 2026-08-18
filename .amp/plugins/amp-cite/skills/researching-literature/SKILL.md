@@ -1,9 +1,13 @@
 ---
-name: literature
+name: researching-literature
 description: Unified literature search, verification, and synthesis workflow for scientific questions. Use when any biological claim needs a verified citation, when reviewing a gene/pathway/disease/drug/target, when surveying preclinical evidence for a target in a disease, when checking novelty, or when turning a paper set into a structured hypothesis synthesis.
+builtin-tools:
+  - literature_search
+  - pubmed_search
+  - zotero_search
 ---
 
-# Literature
+# Researching Literature
 
 Unified literature skill replacing the previous split review and preclinical workflows.
 

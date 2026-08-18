@@ -7,8 +7,6 @@
   "private": true,
   "files": [
     ".amp",
-    ".agents",
-    "src",
     "tests",
     "README.md",
     "LICENSE"
@@ -21,7 +19,7 @@
     "zotero"
   ],
   "scripts": {
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test": "bun test tests/*.test.ts",
     "pack:check": "npm pack --dry-run"
   }
 }

@@ -1,6 +1,6 @@
 # amp-cite
 
-Amp-oriented port of [`@fbraza/pi-cite`](https://github.com/fbraza/pi-cite), preserving the same two-part design:
+Amp-oriented port of [`@fbraza/pi-cite`](https://github.com/fbraza/pi-cite), packaged as one self-contained Amp directory plugin:
 
 1. **Literature tools** for PubMed, Zotero, and combined literature search.
 2. **A bundled literature skill** that teaches the agent how to use those tools for verified citation search, paper screening, and structured synthesis.
@@ -10,34 +10,32 @@ This repository contains the Amp port of the original Pi extension code.
 ## Current contents
 
 ```text
-.amp/plugins/
-└── amp-cite.ts
-.agents/skills/literature/
-├── SKILL.md
-├── references/
-│   ├── preclinical-extraction-guide.md
-│   ├── pubmed_api_reference.md
-│   ├── pubmed_common_queries.md
-│   ├── pubmed_routine.md
-│   └── pubmed_search_syntax.md
-└── scripts/
-    ├── export_all.py
-    ├── extract_experiments.py
-    ├── generate_table.py
-    └── synthesis.py
-tests/upstream/
-└── literature-tools.test.ts
-src/
-├── literature-search.ts
-├── pubmed.ts
-├── shared.ts
-├── types.ts
-└── zotero.ts
+.amp/plugins/amp-cite/
+├── index.ts
+├── lib/
+│   ├── literature-search.ts
+│   ├── pubmed.ts
+│   ├── shared.ts
+│   ├── types.ts
+│   └── zotero.ts
+└── skills/researching-literature/
+    ├── SKILL.md
+    ├── references/
+    │   ├── preclinical-extraction-guide.md
+    │   ├── pubmed_api_reference.md
+    │   ├── pubmed_common_queries.md
+    │   ├── pubmed_routine.md
+    │   └── pubmed_search_syntax.md
+    └── scripts/
+        ├── export_all.py
+        ├── extract_experiments.py
+        ├── generate_table.py
+        └── synthesis.py
+tests/
+└── amp-cite.test.ts
 ```
 
-The skill and resources were copied from `fbraza/pi-cite` and placed under Amp's project skill location, `.agents/skills/`.
-
-The upstream Pi test file is preserved under `tests/upstream/` as a porting contract. The runnable Amp tests live directly under `tests/*.test.ts`.
+The plugin explicitly registers its bundled skill with `amp.registerSkill`. Amp exposes it under the qualified name `amp-cite:researching-literature`; there is no separate bare project skill. The skill's `builtin-tools` frontmatter gates all three plugin tools until the skill is loaded.
 
 ## Amp plugin tools
 
@@ -70,10 +68,16 @@ plugins: reload
 Amp discovers the project plugin at:
 
 ```text
-.amp/plugins/amp-cite.ts
+.amp/plugins/amp-cite/index.ts
 ```
 
-If you want these tools in a different project, copy or symlink `.amp/plugins/amp-cite.ts` and `src/` into that project, or move the plugin to your user-wide Amp plugin directory and adjust the relative imports.
+If you want the plugin in another project, copy the complete `.amp/plugins/amp-cite/` directory. Keeping the directory intact preserves the implementation, bundled skill, references, and scripts.
+
+After reloading, inspect the bundled skill and its resources with:
+
+```bash
+amp skill info amp-cite:researching-literature
+```
 
 The plugin tools return JSON strings containing paper records, provider metadata, and event summaries. Unit tests mock all PubMed/Zotero network calls; live API checks should be done manually with small `max_results` values.
 
@@ -84,14 +88,13 @@ npm test
 npm run pack:check
 ```
 
-The test command intentionally runs only `tests/*.test.ts`; it does not run the preserved upstream Pi tests under `tests/upstream/`.
+The optional preclinical extraction script uses only the Python standard library; pandas is not required.
 
 ## Porting status
 
 - [x] Repository scaffold created.
-- [x] Literature skill copied into Amp's project skill location.
-- [x] Skill references and Python helper scripts copied.
-- [x] Upstream Pi tests preserved as porting reference.
+- [x] Literature skill, references, and scripts bundled into the directory plugin.
+- [x] Skill registered as `amp-cite:researching-literature` with gated plugin tools.
 - [x] PubMed/Zotero TypeScript logic ported from Pi extension to Amp plugin API.
 - [x] Amp plugin tests added.
 - [x] README updated with final install and usage instructions.

@@ -1,17 +1,18 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import test from "node:test"
 
-import ampCitePlugin from "../.amp/plugins/amp-cite.ts"
-import { searchLiterature } from "../src/literature-search.ts"
-import { searchPubmed } from "../src/pubmed.ts"
-import { dedupeKeys, doiToUrl, normalizePmcid, pmcidToUrl } from "../src/shared.ts"
-import type { PaperRecord } from "../src/types.ts"
+import ampCitePlugin, { description } from "../.amp/plugins/amp-cite/index.ts"
+import { searchLiterature } from "../.amp/plugins/amp-cite/lib/literature-search.ts"
+import { searchPubmed } from "../.amp/plugins/amp-cite/lib/pubmed.ts"
+import { dedupeKeys, doiToUrl, normalizePmcid, pmcidToUrl } from "../.amp/plugins/amp-cite/lib/shared.ts"
+import type { PaperRecord } from "../.amp/plugins/amp-cite/lib/types.ts"
 import {
 	buildZoteroOwnershipIndex,
 	markPapersWithZoteroOwnership,
 	searchZotero,
 	zoteroItemToPaperRecord,
-} from "../src/zotero.ts"
+} from "../.amp/plugins/amp-cite/lib/zotero.ts"
 
 const originalFetch = globalThis.fetch
 const originalNcbiApiKey = process.env.NCBI_API_KEY
@@ -78,15 +79,22 @@ function zoteroItemFixture(overrides: Record<string, unknown> = {}): Record<stri
 	}
 }
 
-test("Amp plugin registers all expected tools with Amp-shaped definitions", () => {
+test("Amp directory plugin registers its bundled skill and expected tools", async () => {
 	const tools: Array<Record<string, unknown>> = []
-	ampCitePlugin({
+	const skills: Array<Record<string, unknown>> = []
+	await ampCitePlugin({
 		registerTool(tool: Record<string, unknown>) {
 			tools.push(tool)
 		},
+		async registerSkill(skill: Record<string, unknown>) {
+			skills.push(skill)
+			return { unsubscribe() {} }
+		},
 		logger: { log() {} },
-	})
+	} as any)
 
+	assert.match(description, /PubMed and Zotero/)
+	assert.deepEqual(skills, [{ path: "skills/researching-literature" }])
 	assert.deepEqual(
 		tools.map((tool) => tool.name),
 		["literature_search", "pubmed_search", "zotero_search"],
@@ -99,6 +107,16 @@ test("Amp plugin registers all expected tools with Amp-shaped definitions", () =
 		assert.equal(tool.renderResult, undefined)
 		assert.equal(tool.label, undefined)
 	}
+})
+
+test("bundled skill has its qualified-name metadata, gated tools, and resources", async () => {
+	const skill = await readFile(new URL("../.amp/plugins/amp-cite/skills/researching-literature/SKILL.md", import.meta.url), "utf8")
+	assert.match(skill, /^name: researching-literature$/m)
+	for (const tool of ["literature_search", "pubmed_search", "zotero_search"]) {
+		assert.match(skill, new RegExp(`^  - ${tool}$`, "m"))
+	}
+	assert.match(skill, /references\/pubmed_routine\.md/)
+	assert.match(skill, /scripts\/extract_experiments\.py/)
 })
 
 test("pubmed_search uses NCBI_API_KEY and returns JSON-ready records without abstracts", async () => {
@@ -288,11 +306,15 @@ test("registered Amp tool execute returns parseable JSON", async () => {
 			headers: { "content-type": "application/json" },
 		})
 	const tools: Array<{ name: string; execute: (input: Record<string, unknown>) => Promise<string> }> = []
-	ampCitePlugin({
+	await ampCitePlugin({
 		registerTool(tool: any) {
 			tools.push(tool)
 		},
-	})
+		async registerSkill() {
+			return { unsubscribe() {} }
+		},
+		logger: { log() {} },
+	} as any)
 	const pubmed = tools.find((tool) => tool.name === "pubmed_search")!
 	const output = await pubmed.execute({ query: "trained immunity", max_results: 1, fetch_abstracts: false })
 	const parsed = JSON.parse(output)
