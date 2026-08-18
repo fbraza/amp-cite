@@ -10,7 +10,7 @@ This repository contains the Amp port of the original Pi extension code.
 ## Current contents
 
 ```text
-.amp/plugins/amp-cite/
+amp-cite/
 ├── index.ts
 ├── lib/
 │   ├── literature-search.ts
@@ -18,21 +18,21 @@ This repository contains the Amp port of the original Pi extension code.
 │   ├── shared.ts
 │   ├── types.ts
 │   └── zotero.ts
-└── skills/researching-literature/
-    ├── SKILL.md
-    ├── references/
-    │   ├── preclinical-extraction-guide.md
-    │   ├── pubmed_api_reference.md
-    │   ├── pubmed_common_queries.md
-    │   ├── pubmed_routine.md
-    │   └── pubmed_search_syntax.md
-    └── scripts/
-        ├── export_all.py
-        ├── extract_experiments.py
-        ├── generate_table.py
-        └── synthesis.py
-tests/
-└── amp-cite.test.ts
+├── skills/researching-literature/
+│   ├── SKILL.md
+│   ├── references/
+│   │   ├── preclinical-extraction-guide.md
+│   │   ├── pubmed_api_reference.md
+│   │   ├── pubmed_common_queries.md
+│   │   ├── pubmed_routine.md
+│   │   └── pubmed_search_syntax.md
+│   └── scripts/
+│       ├── export_all.py
+│       ├── extract_experiments.py
+│       ├── generate_table.py
+│       └── synthesis.py
+└── tests/
+    └── amp-cite.test.ts
 ```
 
 The plugin explicitly registers its bundled skill with `amp.registerSkill`. Amp exposes it under the qualified name `amp-cite:researching-literature`; there is no separate bare project skill. The skill's `builtin-tools` frontmatter gates all three plugin tools until the skill is loaded.
@@ -59,21 +59,11 @@ The environment variables are inherited from `pi-cite`:
 
 ## Use in Amp
 
-This repository is arranged as an Amp workspace plugin. Open this repository as the active Amp workspace, then reload plugins from Amp's command palette with:
+The repository root is the complete Amp directory plugin package. To publish it through a User or Workspace Plugins repository, copy the repository contents into that plugin repository as an `amp-cite/` directory. Keeping the directory intact preserves the implementation, bundled skill, references, and scripts.
 
-```text
-plugins: reload
-```
+The source repository deliberately does not place the package under `.amp/plugins/`. The `.amp/` directory is ignored so repository-local Amp configuration can remain unversioned.
 
-Amp discovers the project plugin at:
-
-```text
-.amp/plugins/amp-cite/index.ts
-```
-
-If you want the plugin in another project, copy the complete `.amp/plugins/amp-cite/` directory. Keeping the directory intact preserves the implementation, bundled skill, references, and scripts.
-
-After reloading, inspect the bundled skill and its resources with:
+After installing or publishing the plugin and reloading plugins, inspect the bundled skill with:
 
 ```bash
 amp skill info amp-cite:researching-literature

@@ -6,7 +6,9 @@
   "type": "module",
   "private": true,
   "files": [
-    ".amp",
+    "index.ts",
+    "lib",
+    "skills",
     "tests",
     "README.md",
     "LICENSE"

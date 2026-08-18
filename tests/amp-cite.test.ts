@@ -2,17 +2,17 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import test from "node:test"
 
-import ampCitePlugin, { description } from "../.amp/plugins/amp-cite/index.ts"
-import { searchLiterature } from "../.amp/plugins/amp-cite/lib/literature-search.ts"
-import { searchPubmed } from "../.amp/plugins/amp-cite/lib/pubmed.ts"
-import { dedupeKeys, doiToUrl, normalizePmcid, pmcidToUrl } from "../.amp/plugins/amp-cite/lib/shared.ts"
-import type { PaperRecord } from "../.amp/plugins/amp-cite/lib/types.ts"
+import ampCitePlugin, { description } from "../index.ts"
+import { searchLiterature } from "../lib/literature-search.ts"
+import { searchPubmed } from "../lib/pubmed.ts"
+import { dedupeKeys, doiToUrl, normalizePmcid, pmcidToUrl } from "../lib/shared.ts"
+import type { PaperRecord } from "../lib/types.ts"
 import {
 	buildZoteroOwnershipIndex,
 	markPapersWithZoteroOwnership,
 	searchZotero,
 	zoteroItemToPaperRecord,
-} from "../.amp/plugins/amp-cite/lib/zotero.ts"
+} from "../lib/zotero.ts"
 
 const originalFetch = globalThis.fetch
 const originalNcbiApiKey = process.env.NCBI_API_KEY
@@ -110,7 +110,7 @@ test("Amp directory plugin registers its bundled skill and expected tools", asyn
 })
 
 test("bundled skill has its qualified-name metadata, gated tools, and resources", async () => {
-	const skill = await readFile(new URL("../.amp/plugins/amp-cite/skills/researching-literature/SKILL.md", import.meta.url), "utf8")
+	const skill = await readFile(new URL("../skills/researching-literature/SKILL.md", import.meta.url), "utf8")
 	assert.match(skill, /^name: researching-literature$/m)
 	for (const tool of ["literature_search", "pubmed_search", "zotero_search"]) {
 		assert.match(skill, new RegExp(`^  - ${tool}$`, "m"))
